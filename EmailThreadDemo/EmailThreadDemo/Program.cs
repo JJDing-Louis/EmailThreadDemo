@@ -36,11 +36,12 @@ class Program
         
         var mail = new EmailMessageModel
         {
-            Subject = "測試信件",
+            Subject = "測試信件2",
             TextBody = "這是一封測試信",
             HtmlBody = "<h1>這是一封測試信</h1><p>Hello MailKit</p>",
             Priority = "High",
-            RequestReadReceipt = false
+            RequestReadReceipt = false,
+            MessageId = $"<AuotTicket>-louisding70121@gmail.com-{Guid.NewGuid()}>"
         };
 
         mail.From.Add(new EmailAddressModel

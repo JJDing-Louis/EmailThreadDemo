@@ -1,20 +1,11 @@
-﻿using System;
-using System.Linq;
-using EmailThreadDemo.Model;
+﻿using EmailThreadDemo.Model;
 using MailKit;
 using MailKit.Net.Imap;
-using MailKit.Security;
-using System;
-using System.IO;
-using System.Linq;
+using MailKit.Security; 
 using EmailResponseService.Model;
-using EmailThreadDemo.Model;
-using MailKit;
-using MailKit.Net.Imap;
 using MailKit.Net.Smtp;
-using MailKit.Security;
 using MimeKit;
-using MimeKit.Utils;
+using MailKit.Search;
 
 namespace EmailThreadDemo;
 
@@ -45,8 +36,10 @@ public class MailFun
         _SmtpuseSsl = mailSettings.SmtpUseSsl;
     }
 
-    public void GetDisplayThread()
+    public List<EmailMessageModel> GetDisplayThread()
     {
+        var result = new List<EmailMessageModel>();
+
         using var client = new ImapClient();
 
         var options = _useSsl ? SecureSocketOptions.SslOnConnect : SecureSocketOptions.StartTls;
@@ -61,7 +54,7 @@ public class MailFun
         {
             Console.WriteLine("Inbox is empty.");
             client.Disconnect(true);
-            return;
+            return result;
         }
 
         int takeLastN = 200;
@@ -81,33 +74,14 @@ public class MailFun
 
         foreach (var thread in threads)
         {
-            PrintThread(thread, 0);
-            Console.WriteLine();
+            TraverseThread(thread, inbox, result, 0);
         }
 
         client.Disconnect(true);
+
+        return result;
     }
-
-    private void PrintThread(MessageThread thread, int depth)
-    {
-        var indent = new string(' ', depth * 2);
-
-        if (thread.Message != null)
-        {
-            var subj = thread.Message.Envelope?.Subject ?? "(no subject)";
-            var from = thread.Message.Envelope?.From?.Mailboxes?.FirstOrDefault()?.ToString() ?? "(unknown)";
-            var dt = thread.Message.InternalDate?.LocalDateTime.ToString("yyyy-MM-dd HH:mm:ss") ?? "(no date)";
-            Console.WriteLine($"{indent}- {subj} | {from} | {dt}");
-        }
-        else
-        {
-            Console.WriteLine($"{indent}- (dummy)");
-        }
-
-        foreach (var child in thread.Children)
-            PrintThread(child, depth + 1);
-    }
-
+    
     public void SendMail(EmailMessageModel model)
     {
         if (model == null)
@@ -254,6 +228,76 @@ public class MailFun
 
         Console.WriteLine("Mail sent successfully.");
     }
+    
+    /// <summary>
+    /// 透過Message-ID查找(需完全相符)
+    /// </summary>
+    /// <param name="messageId"></param>
+    /// <returns></returns>
+    public MimeMessage GetMailByMessageId(string messageId)
+    {
+        using var client = new ImapClient();
+
+        client.Connect(_host, _port, _useSsl);
+        client.Authenticate(_username, _password);
+
+        var inbox = client.Inbox;
+        inbox.Open(FolderAccess.ReadOnly);
+
+        // 搜尋 Message-ID
+        // var results = inbox.Search(SearchQuery.HeaderContains("Message-Id", messageId));
+        var results = inbox.Search(SearchQuery.HeaderContains("Message-Id", messageId));
+
+        if (results.Count == 0)
+            return null;
+
+        // 取第一封
+        var message = inbox.GetMessage(results[0]);
+
+        client.Disconnect(true);
+
+        return message;
+    }
+    
+    public MimeMessage? GetMailBySenderAndMessageIdPrefix(string senderEmail, string messageIdPrefix)
+    {
+        using var client = new ImapClient();
+
+        client.Connect(_host, _port, _useSsl);
+        client.Authenticate(_username, _password);
+
+        var folder = client.Inbox;
+        folder.Open(FolderAccess.ReadOnly);
+
+        // 先用 IMAP 做初步篩選
+        var query = SearchQuery.FromContains(senderEmail)
+            .And(SearchQuery.HeaderContains("Message-Id", messageIdPrefix));
+
+        var results = folder.Search(query);
+
+        foreach (var uid in results)
+        {
+            var message = folder.GetMessage(uid);
+
+            // 再用程式端做精準判斷
+            var fromMatch = message.From.Mailboxes
+                .Any(m => string.Equals(m.Address, senderEmail, StringComparison.OrdinalIgnoreCase));
+
+            var messageIdMatch = !string.IsNullOrWhiteSpace(message.MessageId) &&
+                                 message.MessageId.StartsWith(messageIdPrefix, StringComparison.OrdinalIgnoreCase);
+
+            if (fromMatch && messageIdMatch)
+            {
+                client.Disconnect(true);
+                return message;
+            }
+        }
+
+        client.Disconnect(true);
+        return null;
+    }
+
+    #region Private(Send)
 
     private static MailboxAddress ToMailboxAddress(EmailAddressModel model)
     {
@@ -389,4 +433,123 @@ public class MailFun
                 part.ContentDisposition = new ContentDisposition(ContentDisposition.Attachment);
         }
     }
+
+    #endregion
+    
+    #region Public(DisplayThread)    
+    
+    private static List<EmailAddressModel> ConvertAddressList(InternetAddressList? addresses)
+    {
+        var result = new List<EmailAddressModel>();
+
+        if (addresses == null || addresses.Count == 0)
+            return result;
+
+        foreach (var address in addresses)
+        {
+            switch (address)
+            {
+                case MailboxAddress mailbox:
+                    result.Add(new EmailAddressModel
+                    {
+                        Name = mailbox.Name,
+                        Address = mailbox.Address
+                    });
+                    break;
+
+                case GroupAddress group:
+                    if (group.Members != null)
+                    {
+                        foreach (var member in group.Members.Mailboxes)
+                        {
+                            result.Add(new EmailAddressModel
+                            {
+                                Name = member.Name,
+                                Address = member.Address
+                            });
+                        }
+                    }
+                    break;
+            }
+        }
+
+        return result;
+    }
+
+    private static EmailAddressModel? ConvertMailbox(MailboxAddress? mailbox)
+    {
+        if (mailbox == null)
+            return null;
+
+        return new EmailAddressModel
+        {
+            Name = mailbox.Name,
+            Address = mailbox.Address
+        };
+    }
+    
+    private void TraverseThread(MessageThread thread, IMailFolder inbox, List<EmailMessageModel> list, int depth)
+    {
+        if (thread.Message != null)
+        {
+            var uid = thread.Message.UniqueId;
+            var message = inbox.GetMessage(uid);
+
+            var model = new EmailMessageModel
+            {
+                Subject = message.Subject,
+                //MailTread需要看的東西
+                MessageId = message.MessageId,
+                InReplyTo = message.InReplyTo,
+                References = message.References?.ToList() ?? new List<string>(),
+                //
+                Date = message.Date != DateTimeOffset.MinValue ? message.Date : null,
+                DateRaw = message.Headers["Date"],
+
+                From = ConvertAddressList(message.From),
+                Sender = ConvertMailbox(message.Sender),
+                ReplyTo = ConvertAddressList(message.ReplyTo),
+                To = ConvertAddressList(message.To),
+                Cc = ConvertAddressList(message.Cc),
+                Bcc = ConvertAddressList(message.Bcc),
+
+                TextBody = message.TextBody,
+                HtmlBody = message.HtmlBody,
+
+                ContentType = message.Body?.ContentType?.MimeType,
+                MimeVersion = message.MimeVersion?.ToString(),
+
+                ReceivedHeaders = message.Headers
+                    .Where(h => h.Field.Equals("Received", StringComparison.OrdinalIgnoreCase))
+                    .Select(h => h.Value)
+                    .ToList()
+            };
+
+            list.Add(model);
+
+            var indent = new string(' ', depth * 2);
+            Console.WriteLine($"{indent}-{model.MessageId}|" +
+                              $"{(!string.IsNullOrEmpty(model.InReplyTo)?model.InReplyTo:"OOO")}|" +
+                              $"{(model.References.Count!=0?string.Join(",",model.References):"OOO")}|" +
+                              $"{model.Subject}|" +
+                              $"{model.From.FirstOrDefault()?.Address}|" +
+                              $"{model.Date}");
+        }
+
+        foreach (var child in thread.Children)
+        {
+            TraverseThread(child, inbox, list, depth + 1);
+        }
+    }
+    
+    #endregion
+
+    #region Private(Response)
+
+    
+
+    #endregion
+    
+
+
 }

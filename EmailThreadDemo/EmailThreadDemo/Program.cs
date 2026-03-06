@@ -1,4 +1,6 @@
-﻿namespace EmailThreadDemo;
+﻿using EmailThreadDemo.Model;
+
+namespace EmailThreadDemo;
 
 class Program
 {

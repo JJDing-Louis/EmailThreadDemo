@@ -1,5 +1,6 @@
 ﻿using System;
 using System.Linq;
+using EmailThreadDemo.Model;
 using MailKit;
 using MailKit.Net.Imap;
 using MailKit.Security;
@@ -92,16 +93,4 @@ public class MailFun
     }
 
 
-}
-public class AccountInfo
-{
-    public string Username { get; set; }
-    public string Password { get; set; }
-}
-
-public class MailSettings
-{
-    public string Host { get; set; }
-    public int Port { get; set; }
-    public bool UseSsl { get; set; }
 }

@@ -245,7 +245,6 @@ public class MailFun
         inbox.Open(FolderAccess.ReadOnly);
 
         // 搜尋 Message-ID
-        // var results = inbox.Search(SearchQuery.HeaderContains("Message-Id", messageId));
         var results = inbox.Search(SearchQuery.HeaderContains("Message-Id", messageId));
 
         if (results.Count == 0)
@@ -259,6 +258,11 @@ public class MailFun
         return message;
     }
     
+    /// <summary>
+    /// 透過Message-ID與寄件人前綴去查找(需完全相符)
+    /// </summary>
+    /// <param name="messageId"></param>
+    /// <returns></returns>
     public MimeMessage? GetMailBySenderAndMessageIdPrefix(string senderEmail, string messageIdPrefix)
     {
         using var client = new ImapClient();
